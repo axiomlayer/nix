@@ -71,7 +71,7 @@ out=$(nix build \
   --print-out-paths \
   --no-update-lock-file \
   --no-write-lock-file \
-  "$flake#packages.$expected_system.nix")
+  "$flake#packages.$expected_system.nix^out")
 
 [[ -x "$out/bin/nix" ]] || {
   echo "built output has no executable nix: $out" >&2
