@@ -25,7 +25,11 @@ The lane has two duties:
 2. On the schedule or an explicit dispatch, resolve `NixOS/nix` `master` once
    to a full commit SHA and run the same native build/test contract. This is an
    alarm for an upstream change that the fleet's pinned Nix cannot build; it is
-   never a promotion or publication path.
+   never a promotion or publication path. Release builds must report the exact
+   fleet version. Upstream development builds must report Nix's canonical
+   `<base>pre<date>_<revision>` form and the built binary must agree with the
+   evaluated package; a clean path input may identify its revision as `dirty`,
+   while the independently checked Git commit still fixes the tested source.
 
 Update `fleet-pin.json` only after the corresponding Dotfiles promotion policy
 and candidate are updated. The public hosted lane validates the committed

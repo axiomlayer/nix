@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -ne 5 ]]; then
-  echo "usage: build-and-test.sh SOURCE COMMIT VERSION SYSTEM LOCK_SHA256|auto" >&2
+if [[ $# -ne 6 ]]; then
+  echo "usage: build-and-test.sh SOURCE COMMIT VERSION SYSTEM LOCK_SHA256|auto release|development" >&2
   exit 2
 fi
 
@@ -11,6 +11,15 @@ expected_commit=$2
 expected_version=$3
 expected_system=$4
 expected_lock_sha=$5
+release_kind=$6
+
+case "$release_kind" in
+  release | development) ;;
+  *)
+    echo "release kind must be release or development, got: $release_kind" >&2
+    exit 2
+    ;;
+esac
 
 sha256_file() {
   if command -v sha256sum >/dev/null 2>&1; then
@@ -23,6 +32,13 @@ sha256_file() {
 actual_commit=$(git -C "$source_dir" rev-parse HEAD)
 [[ "$actual_commit" == "$expected_commit" ]] || {
   echo "source commit mismatch: expected $expected_commit, got $actual_commit" >&2
+  exit 1
+}
+
+source_status=$(git -C "$source_dir" status --porcelain --untracked-files=all)
+[[ -z "$source_status" ]] || {
+  echo "source checkout is not clean:" >&2
+  printf '%s\n' "$source_status" >&2
   exit 1
 }
 
@@ -61,10 +77,30 @@ declared_version=$(nix eval \
   --no-update-lock-file \
   --no-write-lock-file \
   "$flake#packages.$expected_system.nix.version")
-[[ "$declared_version" == "$expected_version" ]] || {
-  echo "flake package version mismatch: expected $expected_version, got $declared_version" >&2
-  exit 1
-}
+if [[ "$release_kind" == release ]]; then
+  [[ "$declared_version" == "$expected_version" ]] || {
+    echo "release package version mismatch: expected $expected_version, got $declared_version" >&2
+    exit 1
+  }
+else
+  development_prefix="${expected_version}pre"
+  development_suffix=${declared_version#"$development_prefix"}
+  development_date=${development_suffix%%_*}
+  development_revision=${development_suffix#*_}
+  [[ "$declared_version" != "$development_suffix" \
+    && "$development_date" =~ ^[0-9]{8}$ \
+    && "$development_revision" != "$development_suffix" ]] || {
+    echo "development package version is not canonical: expected ${development_prefix}YYYYMMDD_REVISION, got $declared_version" >&2
+    exit 1
+  }
+  if [[ "$development_revision" != dirty ]]; then
+    [[ "$development_revision" =~ ^[0-9a-f]{7,40}$ \
+      && "$expected_commit" == "$development_revision"* ]] || {
+      echo "development package revision does not identify $expected_commit: $declared_version" >&2
+      exit 1
+    }
+  fi
+fi
 
 out=$(nix build \
   --no-link \
@@ -79,8 +115,8 @@ out=$(nix build \
 }
 
 built_version=$("$out/bin/nix" --version | awk '{ print $NF }')
-[[ "$built_version" == "$expected_version" ]] || {
-  echo "built Nix mismatch: expected $expected_version, got $built_version" >&2
+[[ "$built_version" == "$declared_version" ]] || {
+  echo "built Nix mismatch: declared $declared_version, got $built_version" >&2
   exit 1
 }
 
@@ -92,9 +128,15 @@ lock_after=$(sha256_file "$source_dir/flake.lock")
   exit 1
 }
 
-git -C "$source_dir" diff --exit-code -- flake.lock
+git -C "$source_dir" diff --exit-code
+git -C "$source_dir" diff --cached --exit-code
+[[ -z "$(git -C "$source_dir" status --porcelain --untracked-files=all)" ]] || {
+  echo "build mutated the source checkout" >&2
+  exit 1
+}
 printf 'source_commit=%s\n' "$actual_commit"
 printf 'source_version=%s\n' "$actual_version"
+printf 'package_version=%s\n' "$declared_version"
 printf 'native_system=%s\n' "$actual_system"
 printf 'source_flake_lock_sha256=%s\n' "$lock_after"
 printf 'built_output=%s\n' "$out"

@@ -100,6 +100,7 @@ jobs:
           "${{ env.FLEET_NIX_VERSION }}"
           "${{ matrix.system }}"
           "${{ env.FLEET_NIX_LOCK_SHA256 }}"
+          release
 
   resolve-upstream:
     name: Resolve the upstream probe to one commit
@@ -170,4 +171,5 @@ jobs:
             "$UPSTREAM_COMMIT" \
             "$candidate_version" \
             "${{ matrix.system }}" \
-            auto
+            auto \
+            development
