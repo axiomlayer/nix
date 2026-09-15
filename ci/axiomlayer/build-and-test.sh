@@ -55,11 +55,16 @@ nix flake metadata \
   --no-update-lock-file \
   --json \
   "$flake" >/dev/null
-nix flake check \
-  --no-build \
+
+declared_version=$(nix eval \
+  --raw \
   --no-update-lock-file \
   --no-write-lock-file \
-  "$flake"
+  "$flake#packages.$expected_system.nix.version")
+[[ "$declared_version" == "$expected_version" ]] || {
+  echo "flake package version mismatch: expected $expected_version, got $declared_version" >&2
+  exit 1
+}
 
 out=$(nix build \
   --no-link \

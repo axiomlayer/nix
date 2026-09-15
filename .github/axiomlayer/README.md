@@ -19,7 +19,9 @@ The lane has two duties:
 
 1. Build and run the tests included by `packages.<system>.nix` for Nix 2.35.2 at
    commit `2c73b59da29606068c0c98db015dd3a66955525d` on native Linux x86_64,
-   Linux ARM64, macOS Intel, and macOS ARM64 runners. Lock mutation is disabled.
+   Linux ARM64, macOS Intel, and macOS ARM64 runners. Evaluation is scoped to
+   that native package and lock mutation is disabled; unrelated Hydra jobsets
+   are deliberately outside this integration contract.
 2. On the schedule or an explicit dispatch, resolve `NixOS/nix` `master` once
    to a full commit SHA and run the same native build/test contract. This is an
    alarm for an upstream change that the fleet's pinned Nix cannot build; it is
