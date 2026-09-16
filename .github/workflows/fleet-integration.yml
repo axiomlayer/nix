@@ -1,0 +1,175 @@
+name: Axiom fleet Nix integration
+
+on:
+  pull_request:
+    branches:
+      - master
+    paths: &integration_paths
+      - ".github/axiomlayer/**"
+      - ".github/upstream-workflows/**"
+      - ".github/workflows/**"
+      - "ci/axiomlayer/**"
+  push:
+    branches:
+      - master
+    paths: *integration_paths
+  schedule:
+    - cron: "17 8 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: axiom-nix-integration-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+
+env:
+  FLEET_NIX_VERSION: "2.35.2"
+  FLEET_NIX_COMMIT: 2c73b59da29606068c0c98db015dd3a66955525d
+  FLEET_NIX_LOCK_SHA256: 1ec27d32a6fdc525f0bd17d5fb2beeb801bd7488d4c632e69346eec0c02bcd9e
+  NIX_CONFIG: |
+    experimental-features = nix-command flakes
+    flake-registry =
+    accept-flake-config = false
+    warn-dirty = false
+
+jobs:
+  policy:
+    name: Read-only policy and isolation contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out the integration harness
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: integration
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check out the exact fleet Nix source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: AxiomLayer/nix
+          ref: ${{ env.FLEET_NIX_COMMIT }}
+          path: source
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Prove the policy, lock, and workflow boundary
+        run: bash integration/ci/axiomlayer/test-contracts.sh integration source
+
+  fleet-pin:
+    name: Fleet pin / ${{ matrix.system }}
+    needs: policy
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            system: x86_64-linux
+          - runner: ubuntu-24.04-arm
+            system: aarch64-linux
+          - runner: macos-15-intel
+            system: x86_64-darwin
+          - runner: macos-15
+            system: aarch64-darwin
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    steps:
+      - name: Check out the integration harness
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: integration
+          persist-credentials: false
+      - name: Check out the exact fleet Nix source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: AxiomLayer/nix
+          ref: ${{ env.FLEET_NIX_COMMIT }}
+          path: candidate
+          persist-credentials: false
+      - name: Install the exact fleet Nix bootstrap
+        uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+        with:
+          install_url: https://releases.nixos.org/nix/nix-2.35.2/install
+          extra_nix_config: ${{ env.NIX_CONFIG }}
+      - name: Build and test the immutable fleet pin
+        run: >-
+          bash integration/ci/axiomlayer/build-and-test.sh
+          candidate
+          "${{ env.FLEET_NIX_COMMIT }}"
+          "${{ env.FLEET_NIX_VERSION }}"
+          "${{ matrix.system }}"
+          "${{ env.FLEET_NIX_LOCK_SHA256 }}"
+          release
+
+  resolve-upstream:
+    name: Resolve the upstream probe to one commit
+    needs: policy
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      commit: ${{ steps.resolve.outputs.commit }}
+    steps:
+      - name: Resolve NixOS master without mutating the fork
+        id: resolve
+        shell: bash
+        run: |
+          set -euo pipefail
+          commit=$(git ls-remote https://github.com/NixOS/nix.git refs/heads/master | awk 'NR == 1 { print $1 }')
+          [[ "$commit" =~ ^[0-9a-f]{40}$ ]]
+          printf 'commit=%s\n' "$commit" >> "$GITHUB_OUTPUT"
+          printf 'upstream_commit=%s\n' "$commit"
+
+  upstream-tip:
+    name: Upstream compatibility / ${{ matrix.system }}
+    needs:
+      - policy
+      - resolve-upstream
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            system: x86_64-linux
+          - runner: ubuntu-24.04-arm
+            system: aarch64-linux
+          - runner: macos-15-intel
+            system: x86_64-darwin
+          - runner: macos-15
+            system: aarch64-darwin
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    steps:
+      - name: Check out the integration harness
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: integration
+          persist-credentials: false
+      - name: Check out the resolved upstream candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: NixOS/nix
+          ref: ${{ needs.resolve-upstream.outputs.commit }}
+          path: candidate
+          persist-credentials: false
+      - name: Install the exact fleet Nix bootstrap
+        uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+        with:
+          install_url: https://releases.nixos.org/nix/nix-2.35.2/install
+          extra_nix_config: ${{ env.NIX_CONFIG }}
+      - name: Build and test the resolved upstream candidate
+        shell: bash
+        env:
+          UPSTREAM_COMMIT: ${{ needs.resolve-upstream.outputs.commit }}
+        run: |
+          set -euo pipefail
+          candidate_version=$(tr -d '\r\n' < candidate/.version)
+          bash integration/ci/axiomlayer/build-and-test.sh \
+            candidate \
+            "$UPSTREAM_COMMIT" \
+            "$candidate_version" \
+            "${{ matrix.system }}" \
+            auto \
+            development
